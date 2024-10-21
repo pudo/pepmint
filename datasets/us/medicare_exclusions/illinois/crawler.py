@@ -1,3 +1,5 @@
+from base64 import b64decode
+import json
 from typing import Dict, Generator
 from rigour.mime.types import XLSX
 from openpyxl import load_workbook
@@ -6,6 +8,7 @@ from datetime import datetime
 import openpyxl
 
 from zavod import Context, helpers as h
+from zavod.shed.zyte_api import fetch_raw
 
 
 def parse_sheet(
@@ -80,17 +83,54 @@ def crawl_excel_url(context: Context):
 
 
 def crawl(context: Context) -> None:
-    # First we find the link to the excel file
-    excel_url = crawl_excel_url(context)
-    path = context.fetch_resource("list.xlsx", excel_url)
-    context.export_resource(path, XLSX, title=context.SOURCE_TITLE)
+    zyte_data = {
+        "url": context.data_url,
+        "browserHtml": True,
+        "networkCapture": [
+            {
+                "filterType": "url",
+                "httpResponseBody": True,
+                "value": "download-as-excel",
+                "matchType": "contains",
+            },
+        ],
+        "actions": [
+            {
+                "action": "click",
+                "selector": {
+                    "type": "css",
+                    "value": ".entitylist-download",
+                },
+            },
+            {
+                "action": "waitForResponse",
+                "urlPattern": "download-as-excel",
+                "urlMatchingOptions": "contains", 
+                "timeout": 15,
+            }
+        ],
+    }
 
-    wb = load_workbook(path, read_only=True)
+    response = fetch_raw(context, zyte_data)
+    for action in response["actions"]:
+        context.log.info("action", action)
+    assert len(response["networkCapture"]) == 1, response["networkCapture"]
 
-    # Currently terminated providers
-    for item in parse_sheet(context, wb["Termination List"]):
-        crawl_item(item, context, True)
+    key_response = b64decode(response["networkCapture"][0]["httpResponseBody"]).decode("utf-8")
+    key = json.loads(key_response)["sessionKey"]
 
-    # Providers that where terminated but are now reinstated
-    for item in parse_sheet(context, wb["Reinstated Providers"]):
-        crawl_item(item, context, False)
+    url = response["networkCapture"][0]["url"] + "?key=" + key
+    context.fetch_resource("source.xlsx", url)
+    #context.export_resource(path, XLSX, title=context.SOURCE_TITLE)
+
+
+#
+# wb = load_workbook(path, read_only=True)
+#
+## Currently terminated providers
+# for item in parse_sheet(context, wb["Termination List"]):
+#    crawl_item(item, context, True)
+#
+## Providers that where terminated but are now reinstated
+# for item in parse_sheet(context, wb["Reinstated Providers"]):
+#    crawl_item(item, context, False)

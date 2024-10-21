@@ -298,3 +298,15 @@ def fetch_html(
     if cache_days is not None:
         context.cache.set(fingerprint, text)
     return doc
+
+
+def fetch_raw(context: Context, zyte_data: Any) -> Any:
+    if settings.ZYTE_API_KEY is None:
+        raise RuntimeError("OPENSANCTIONS_ZYTE_API_KEY is not set")
+    api_response = context.http.post(
+        ZYTE_API_URL,
+        auth=(settings.ZYTE_API_KEY, ""),
+        json=zyte_data,
+    )
+    api_response.raise_for_status()
+    return api_response.json()
