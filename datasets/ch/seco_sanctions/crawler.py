@@ -6,6 +6,7 @@ from typing import Dict, Optional, Tuple, List
 from followthemoney.types import registry
 from followthemoney.util import join_text
 from lxml.etree import _Element as Element
+from normality import slugify
 
 from zavod import Context, Entity
 from zavod import helpers as h
@@ -33,19 +34,102 @@ NAME_PARTS: Dict[MayStr, MayStr] = {
     "whole-name": None,
     "other": None,
 }
-# Some metadata is dirty text in <other-information> tags
-# TODO: take in charge multiple values
-REGEX_WEBSITE = re.compile(r"Website ?: ((https?:|www\.)\S*)")
-REGEX_EMAIL = re.compile(
-    r"E-?mail( address)? ?: ([A-Za-z0-9._-]+@[A-Za-z0-9-]+(\.[A-Z|a-z]{2,})+)"
-)
-REGEX_PHONE = re.compile(r"(Tel\.|Telephone)( number)? ?: (\+?[0-9- ()]+)")
-REGEX_INN = re.compile(r"Taxpayer [Ii]dentification [Nn]umber ?: (\d+)\.?")
-REGEX_REGNUM = re.compile(
-    r"(ОГРН/main )?([Ss]tate |Business )?[Rr]egistration number ?: (\d+)\.?"
-)
-REGEX_TAX = re.compile(r"Tax [Rr]egistration [Nn]umber ?: (\d+)\.?")
-REGEX_IMO = re.compile(r"IMO [Nn]umber ?: (\d+)\.?")
+
+
+OTHER_INFO_DEFINITIONS = [
+    # Website related
+    # r"(?P<whole>(?P<key>Website:) (?P<value>(https?:\/\/|www\.)\S+))",
+    r"(?P<whole>(?P<key>Website:)\s*(?P<value>.+))",
+    r"(?P<whole>(?P<key>Company website:)\s*(?P<value>.+))",
+    # Email related
+    r"(?P<whole>(?P<key>E-?mail(?: address)?\s*:) (?P<value>.+))",
+    r"(?P<whole>(?P<key>Company email:)\s*(?P<value>.+))",
+    # Phone/Fax related
+    r"(?P<whole>(?P<key>(Tel\.?|Telephone)(?:\s+number)? ?:?|Phone(?:\s+number)?:?)\s*(?P<value>.+))",
+    r"(?P<whole>(?P<key>Fax(?:\s+no\.)? ?:?)\s*(?P<value>\+?[0-9- ()]+))",
+    r"(?P<whole>(?P<key>Company phone:)\s*(?P<value>.+))",
+    # Identification numbers
+    r"(?P<whole>(?P<key>(Taxpayer [Ii]dentification [Nn]umber) ?:) (?P<value>.+)\.?)",
+    r"(?P<whole>(?P<key>(ОГРН/main )?([Ss]tate |Business )?[Rr]egistration number ?:) (?P<value>.+)\.?)",
+    r"(?P<whole>(?P<key>(Tax [Rr]egistration [Nn]umber) ?:) (?P<value>.+)\.?)",
+    r"(?P<whole>(?P<key>(Tax [Ii]dentification [Nn]umber) ?:|Tax ID number:|Tax ID No. ?:?|Tax [Nn]umber:) (?P<value>.+)\.?)",
+    r"(?P<whole>(?P<key>National [Ii]dentification [Nn]umber ?:|National ID number:)\s*(?P<value>\d+)\s*(?P<extra>\(passport\))?)",
+    r"(?P<whole>(?P<key>State [Ii]dentification [Nn]umber(?: \([A-Z]+\))? ?:)\s*(?P<value>.+)\s*(?P<extra>\([^)]+\))?)",
+    r"(?P<whole>(?P<key>(Passport number) ?:) (?P<value>[A-Za-z0-9]+)\.?)",
+    r"(?P<whole>(?P<key>(Passport number, national ID number, other numbers of identity documents) ?:) (?P<value>[A-Za-z0-9]+)\s*(?P<extra>\(passport\))?)",
+    r"(?P<whole>(?P<key>National ID\.:)\s*(?P<value>.+))",
+    r"(?P<whole>(?P<key>National identification no:)\s*(?P<value>.+))",
+    r"(?P<whole>(?P<key>(TIN|KPP|OGRN|UNP|OKPO|INN|PPC|BIN) ?:?)\s*(?P<value>\d+))",
+    # r"^(?P<whole>(?P<key>Registration number:)\s*(?P<value>\d+))$",
+    # r"^(?P<whole>(?P<key>Registration number:)\s*(?P<value>\d+)(?:\s*\((?P<extra>[^\)]+)\))?)$",
+    r"(?P<whole>(?P<key>Registration number \(OGRN\):)\s*(?P<value>\d+))",
+    r"(?P<whole>(?P<key>Registration number \(SNR\):)\s*(?P<value>.+))",
+    r"(?P<whole>(?P<key>(ID number) ?:|ID Card Number:) (?P<value>[A-Za-z0-9]+)\.?)",
+    r"(?P<whole>(?P<key>Economic code:)\s*(?P<value>\d+))",
+    r"(?P<whole>(?P<key>Syrian National ID Number:)\s*(?P<value>\d+))",
+    r"(?P<whole>(?P<key>(IMO [Nn]umber) ?:) (?P<value>\d+)\.?)",
+    r"(?P<whole>(?P<key>Wagner Group ID:)\s*(?P<value>.+))",
+    # Place and Location related
+    r"(?P<whole>(?P<key>Place of registration ?:)\s*(?P<value>.+))",
+    r"(?P<whole>(?P<key>Principal place of business ?:)\s*(?P<value>.+))",
+    r"(?P<whole>(?P<key>Suspected location:)\s*(?P<value>.+))",
+    r"(?P<whole>(?P<key>Location of activities:)\s*(?P<value>.+))",
+    r"(?P<whole>(?P<key>Headquarters:)\s*(?P<value>.+))",
+    r"(?P<whole>(?P<key>Nationality:)\s*(?P<value>[\w\s]+ until \d{4}\.))",
+    r"(?P<whole>(?P<key>Address:)\s*(?P<value>[\w\s]+ in [\w\s]+\.))",
+    # Date related
+    r"(?P<whole>(?P<key>Date range:)\s*(?P<value>DOB between (?:\d{4}–\d{4}|\d{4}\s*and\s*\d{4})(?:\.\s*Date range: DOB between (?:\d{4}–\d{4}|\d{4}\s*and\s*\d{4}))*\.?))",
+    # r"(?P<whole>(?P<key>Date of registration:)\s*(?P<value>\d{1,2} [A-Za-z]+ \d{4}))",
+    r"(?P<whole>(?P<key>Date of registration:)\s*(?P<value>[\w\s./\\-]+))",
+    # r"(?P<whole>(?P<key>Date of registration:)\s*(?P<value>.+))",
+    r"(?P<whole>(?P<key>DOB:)\s*(?P<value>.+))",
+    # Role and Title related
+    r"(?P<whole>(?P<key>(Function) ?:) (?P<value>.+))",
+    r"(?P<whole>(?P<key>(Title) ?:) (?P<value>.+))",
+    r"(?P<whole>(?P<key>(Rank) ?:) (?P<value>.+))",
+    r"(?P<whole>(?P<key>(Position\(s\)) ?:|) (?P<value>.+))",
+    r"(?P<whole>(?P<key>(Position) ?:) (?P<value>.+))",
+    r"(?P<whole>(?P<key>(Designation) ?:) (?P<value>.+))",
+    r"(?P<whole>(?P<key>Owner and chairman ?:)\s*(?P<value>.+))",
+    r"(?P<whole>(?P<key>Active region ?:)\s*(?P<value>.+))",
+    r"(?P<whole>(?P<key>(Type of entity) ?:) (?P<value>.+))",
+    r"(?P<whole>(?P<key>(Profession) ?:?) (?P<value>.+))",
+    # Others
+    r"(?P<whole>(?P<key>Associated entities:)\s*(?P<value>[^;]+(?:; [^;]+)*))",
+    r"(?P<whole>(?P<key>Associated individuals:)\s*(?P<value>.+))",
+    r"(?P<whole>(?P<key>Other identifying information:)\s*(?P<value>.+))",
+    r"(?P<whole>(?P<key>Associated entities and individuals:)\s*(?P<value>.+))",
+    r"(?P<whole>(?P<key>Other associated entities:)\s*(?P<value>.+))",
+    r"(?P<whole>(?P<key>Identity document number:)\s*(?P<value>.+))",
+    r"(?P<whole>(?P<key>Personal ID:)\s*(?P<value>.+))",
+    r"(?P<whole>(?P<key>Tax payer ID:)\s*(?P<value>\d+))",
+    r"(?P<whole>(?P<key>Status:)\s*(?P<value>.+))",
+    r"(?P<whole>(?P<key>Callsign:)\s*(?P<value>[\w\s]+))",
+]
+# [Old reference # E.29.II.3]
+# value=Tax Identification Number (Ukraine): 2929001847
+# value=Facebook: https://www.facebook.com/profile.php?id=100063824414668
+# value=VK: https://vk.com/official_cniitm
+# value=Principal places of business: United Arab Emirates, Russian Federation, European Union
+# Tax ID No.: 663004268009
+# value=Social media: Cossack National Guard http://vk.com/kazak_ nac_guard
+# value=Social media and other information: https://vk.com/luguard; http://vk.com/club68692201; https://vk.com/luguardnew
+# value=Additional information: INN/KPP 7303026762 / 732701001
+
+OTHER_INFO_REGEXES = [re.compile(pattern) for pattern in OTHER_INFO_DEFINITIONS]
+
+
+def process_entry(value, regex_patterns):
+    for regex in regex_patterns:
+        match = regex.match(value)
+        if match:
+            return {
+                "regex": regex.pattern,
+                "whole": match.group("whole"),
+                "key": match.group("key"),
+                "value": match.group("value"),
+            }
+    return None
 
 
 def parse_address(node: Element):
@@ -234,36 +318,72 @@ def parse_entry(context: Context, target: Element, programs, places):
         if other.text is None:
             continue
         value = other.text.strip()
-        imo_num = REGEX_IMO.fullmatch(value)
-        reg_num = REGEX_REGNUM.fullmatch(value)
-        inn_match = REGEX_INN.fullmatch(value)
-        if entity.schema.is_a("Vessel") and imo_num:
-            entity.add("imoNumber", imo_num.group(1))
-        elif entity.schema.is_a("LegalEntity") and value.startswith(
-            "Date of registration"
-        ):
-            _, reg_date = value.split(":", 1)
-            h.apply_date(entity, "incorporationDate", reg_date.strip())
-        elif entity.schema.is_a("LegalEntity") and value.startswith("Type of entity"):
-            _, legalform = value.split(":", 1)
-            entity.add("legalForm", legalform)
-        elif entity.schema.is_a("LegalEntity") and reg_num:
-            entity.add("registrationNumber", reg_num.group(3))
-        elif inn_match:
-            entity.add("innCode", inn_match.group(1))
-        elif tax := REGEX_TAX.fullmatch(value):
-            entity.add("taxNumber", tax.group(1))
-        elif website := REGEX_WEBSITE.fullmatch(value):
-            entity.add("website", website.group(1))
-        elif email := REGEX_EMAIL.fullmatch(value):
-            entity.add("email", email.group(2))
-        elif phonenumber := REGEX_PHONE.fullmatch(value):
-            entity.add("phone", phonenumber.group(3))
-        elif value == "Registration number: ИНН":
-            pass
-        else:
-            # print(value, other.attrib)
-            entity.add("notes", h.clean_note(value))
+        # Add auto-parsed properties
+        result = process_entry(value, OTHER_INFO_REGEXES)
+        if result:
+            # context.log.info("Match found", value=value, match=result)
+            # print("Original Value %r:" % value)
+            # print(f"Match: {result}")
+            # print(f"Key: {result['key']}")
+            print(f"Slugified Key: {slugify(result['key'])}")
+            # print(f"Value: {result['value']}")
+
+            prop = context.lookup_value("properties", slugify(result["key"]))
+            if prop is not None:
+                if prop != "imoNumber" and prop != "incorporationDate":
+                    entity.add(prop, result["value"])
+                elif prop == "incorporationDate":
+                    h.apply_date(entity, prop, result["value"])
+                elif prop == "imoNumber" and entity.schema.name == "Vessel":
+                    entity.add(prop, result["value"])
+            else:
+                context.log.warning(
+                    "Unrecognized property",
+                    key=result["key"],
+                    slugified_key=slugify(result["key"]),
+                )
+
+            # # Remove matched part from original value
+            # pattern = re.escape(
+            #     result["whole"]
+            # )  # Escape any special characters in result["whole"]
+            # value_before = value
+            # value = re.sub(
+            #     pattern, "", value
+            # ).strip()  # Strip any leading/trailing whitespace
+
+            # print(
+            #     f"Value before: {value_before}, value after: {value}",
+            # )
+            value = value.replace(result["whole"], "").strip()
+            # print(f"Remaining Value: {value}")
+            if not value:
+                continue
+        # context.log.warning("Unprocessed remaining value", value=value)
+
+        res = context.lookup("other_information", value)
+        if not res:
+            context.log.warning("More information available", value=value)
+            continue
+        if not (res.properties or res.relations):
+            context.log.warning("No properties or relations", value=value)
+            continue
+        # Add artisinal properties
+        if res.properties:
+            for item in res.properties:
+                entity.add(item["prop"], item["value"])
+        # Create relations and related entities
+        if res.relations:
+            for rel in res.relations:
+                other_entity = context.make(rel["other_schema"])
+                other_entity.id = context.make_id(rel["other_name"], entity.id)
+                other_entity.add("name", rel["other_name"])
+                rel_entity = context.make(rel["rel_schema"])
+                rel_entity.id = context.make_slug(entity.id, other_entity.id)
+                rel_entity.add(rel["this_prop"], entity.id)
+                rel_entity.add(rel["other_prop"], other_entity.id)
+                context.emit(rel_entity)
+                context.emit(other_entity)
 
     sanction = h.make_sanction(context, entity)
     sanction.add("authorityId", entity_ssid)
