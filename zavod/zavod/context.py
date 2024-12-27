@@ -560,7 +560,7 @@ class Context:
             stmt.target = target
             stmt.schema = entity.schema.name
             stmt.first_seen = stamps.get(stmt.id, self.data_time_iso)
-            if stmt.first_seen != self.data_time_iso:
+            if stmt.first_seen == self.data_time_iso:
                 self.stats.changed += 1
             stmt.last_seen = self.data_time_iso
             if not self.dry_run:
