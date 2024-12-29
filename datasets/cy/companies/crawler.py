@@ -129,7 +129,7 @@ def crawl(context: Context) -> None:
     for name, path in files.items():
         if name.startswith("registered_office_"):
             addresses = load_addresses(iter_rows(path))
-        context.log.info("Loaded %d addresses", len(addresses))
+        context.log.info("Loaded %d addresses" % len(addresses))
 
     for name, path in files.items():
         if name.startswith("organisations_"):
